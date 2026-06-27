@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Fetch Claude OAuth usage (5h / 7d / per-model) and cache it ~60s.
+# READ-ONLY: uses the access token that running `claude` sessions keep fresh in
+# ~/.claude/.credentials.json. It never writes credentials (no risk of corrupting
+# the rotating refresh token). If the token is briefly expired (no claude running)
+# the API 401s and we serve the last good cache.
+#
+# Same endpoint Claude Code's native statusline uses. Output: raw usage JSON.
+set -uo pipefail
+
+CRED="$HOME/.claude/.credentials.json"
+CACHE="$HOME/.cache/magnus-claude-usage.json"
+API_URL="https://api.anthropic.com/api/oauth/usage"
+CACHE_TTL=60
+
+mkdir -p "$HOME/.cache" 2>/dev/null || true
+
+# Serve a fresh cache without hitting the network.
+if [ -f "$CACHE" ]; then
+  age=$(( $(date +%s) - $(stat -c %Y "$CACHE" 2>/dev/null || echo 0) ))
+  if [ "$age" -ge 0 ] && [ "$age" -lt "$CACHE_TTL" ]; then cat "$CACHE"; exit 0; fi
+fi
+
+token=$(jq -r '.claudeAiOauth.accessToken // empty' "$CRED" 2>/dev/null)
+if [ -z "$token" ]; then
+  [ -f "$CACHE" ] && cat "$CACHE" || echo '{"error":"no token"}'
+  exit 0
+fi
+
+resp=$(curl -s --max-time 15 -w '\n%{http_code}' "$API_URL" \
+  -H "Authorization: Bearer $token" \
+  -H "anthropic-beta: oauth-2025-04-20" 2>/dev/null)
+code=$(printf '%s' "$resp" | tail -1)
+data=$(printf '%s' "$resp" | sed '$d')
+
+if [ "$code" = "200" ] && [ -n "$data" ]; then
+  printf '%s' "$data" > "$CACHE"
+  printf '%s' "$data"
+else
+  [ -f "$CACHE" ] && cat "$CACHE" || echo "{\"error\":\"http ${code:-000}\"}"
+fi

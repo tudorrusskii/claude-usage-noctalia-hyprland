@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# Format Claude usage for a Noctalia CustomButton (parseJson=true).
+# Collapsed bar:  "<asterisk icon> 42% · 1h 17m"   (5h session % + reset)
+# Tooltip (expand): a "Claude Code [max]" card with Session + Weekly bars,
+#                   styled like claude-o-meter, colored from the live Noctalia theme.
+set -uo pipefail
+
+COLORS="$HOME/.config/noctalia/colors.json"
+CRED="$HOME/.claude/.credentials.json"
+
+# Pull theme colors so the tooltip always matches the active Noctalia theme.
+ckey() { jq -r --arg k "$1" --arg d "$2" '.[$k] // $d' "$COLORS" 2>/dev/null || echo "$2"; }
+C_PRIM=$(ckey mPrimary "#bfc2ff")
+C_TERT=$(ckey mTertiary "#e8b9d5")
+C_OUT=$(ckey mOutline "#474747")
+C_ON=$(ckey mOnSurface "#e2e2e2")
+C_DIM=$(ckey mOnSurfaceVariant "#c6c6c6")
+C_ERR=$(ckey mError "#ffb4ab")
+
+plan=$(jq -r '.claudeAiOauth.subscriptionType // "max"' "$CRED" 2>/dev/null || echo max)
+
+j=$(claude-usage 2>/dev/null)
+err=$(jq -r '.error // empty' <<<"$j" 2>/dev/null || echo "")
+if [ -z "$j" ] || [ -n "$err" ]; then
+  jq -nc --arg tt "Claude usage unavailable${err:+ ($err)}" \
+    '{text:"✻ —",icon:"",tooltip:$tt,color:"none"}'
+  exit 0
+fi
+
+s5=$(jq -r '(.five_hour.utilization // 0)|floor' <<<"$j" 2>/dev/null || echo 0)
+s7=$(jq -r '(.seven_day.utilization // 0)|floor' <<<"$j" 2>/dev/null || echo 0)
+r5=$(jq -r '.five_hour.resets_at // empty' <<<"$j" 2>/dev/null || echo "")
+r7=$(jq -r '.seven_day.resets_at // empty' <<<"$j" 2>/dev/null || echo "")
+
+eta() { # iso -> "45m" / "1h 17m" / "2d 2h" / "now"
+  local iso="$1" tgt now d
+  [ -n "$iso" ] || { printf "?"; return; }
+  tgt=$(date -d "$iso" +%s 2>/dev/null) || { printf "?"; return; }
+  now=$(date +%s); d=$(( tgt - now ))
+  if   [ "$d" -le 0 ];     then printf "now"
+  elif [ "$d" -lt 3600 ];  then printf "%dm" $(( d/60 ))
+  elif [ "$d" -lt 86400 ]; then printf "%dh %02dm" $(( d/3600 )) $(( (d%3600)/60 ))
+  else                          printf "%dd %dh" $(( d/86400 )) $(( (d%86400)/3600 )); fi
+}
+e5=$(eta "$r5"); e7=$(eta "$r7")
+
+# Colored text progress bar -> HTML (filled vs empty in theme colors).
+mkbar() { # pct fillcolor  -> HTML string
+  local pct=$1 cfill=$2 w=18 i fill
+  fill=$(( (pct*w + 50)/100 )); [ "$fill" -gt "$w" ] && fill=$w; [ "$fill" -lt 0 ] && fill=0
+  local f="" e=""
+  for ((i=0;i<fill;i++)); do f+="━"; done
+  for ((i=0;i<w-fill;i++)); do e+="─"; done
+  printf '<font color="%s">%s</font><font color="%s">%s</font>' "$cfill" "$f" "$C_OUT" "$e"
+}
+
+sbar_color=$C_TERT; [ "$s5" -ge 90 ] && sbar_color=$C_ERR
+wbar_color=$C_PRIM; [ "$s7" -ge 90 ] && wbar_color=$C_ERR
+sbar=$(mkbar "$s5" "$sbar_color")
+wbar=$(mkbar "$s7" "$wbar_color")
+
+# Collapsed bar text: ✻ icon (as literal char) + session % + reset, colored by level.
+text="✻ ${s5}% · ${e5}"
+col="none"; [ "$s5" -ge 75 ] && col="tertiary"; [ "$s5" -ge 90 ] && col="error"
+
+# Tooltip card (claude-o-meter style). Literal \n become <br/> via Noctalia toHtml;
+# <b> and <font> tags are preserved.
+tt="<b>✻ Claude Code</b>  <font color=\"${C_DIM}\">${plan}</font>
+
+<b>Session</b>   <font color=\"${C_DIM}\">${s5}% used</font>
+${sbar}
+<font color=\"${C_DIM}\">Resets in ${e5}</font>
+
+<b>Weekly</b>   <font color=\"${C_DIM}\">${s7}% used</font>
+${wbar}
+<font color=\"${C_DIM}\">Resets in ${e7}</font>"
+
+jq -nc --arg t "$text" --arg tt "$tt" --arg c "$col" \
+  '{text:$t,icon:"",tooltip:$tt,color:$c}'
