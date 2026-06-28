@@ -5,9 +5,6 @@ A Claude Code usage indicator for the [Noctalia](https://github.com/noctalia-dev
 The bar shows your **5‑hour session** usage and when it resets. Hover for a card
 with **Session** and **Weekly** progress bars — styled to your active Noctalia theme.
 
-![bar](assets/bar.png)
-
-![tooltip](assets/tooltip.png)
 
 ## How it works
 
